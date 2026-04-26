@@ -14,7 +14,6 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono&display=swap');
     * { font-family: 'Inter', sans-serif; }
     .stApp { background-color: #FFFFFF; }
-    
     .metric-container {
         background: #FDFDFD; border-radius: 12px; padding: 20px;
         border-bottom: 5px solid #FF8C00; box-shadow: 0 4px 12px rgba(0,0,0,0.05);
@@ -22,12 +21,6 @@ st.markdown("""
     }
     .m-label { color: #666; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
     .m-value { color: #121212; font-size: 24px; font-weight: 900; font-family: 'JetBrains Mono'; margin: 5px 0; }
-    
-    .gpt-summary {
-        background: #F8F9FA; border-left: 5px solid #000; padding: 15px;
-        border-radius: 5px; font-size: 14px; margin-bottom: 20px;
-    }
-
     div.stButton > button {
         background: #000; color: white; border-radius: 8px; height: 45px; 
         width: 100%; font-weight: 800; border: none;
@@ -37,7 +30,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- 2. ENGINE DE DADOS ---
-DB = 'dunas_fleet_final_v60.db'
+DB = 'dunas_fleet_final_v90.db'
 
 def query(sql, p=(), fetch=False):
     with sqlite3.connect(DB) as conn:
@@ -83,106 +76,79 @@ with st.sidebar:
         st.session_state.user = None
         st.rerun()
 
-# --- 5. PAINEL MASTER (CARDS LADO A LADO SEM VALORES $) ---
+# --- 5. LÓGICA DE TABELA HORIZONTAL ---
+def get_pivot_data(c_f, d1, d2):
+    sql = "SELECT colaborador, data, hora, tipo FROM pontos WHERE data BETWEEN ? AND ?"
+    params = [d1.isoformat(), d2.isoformat()]
+    if c_f != "Todos":
+        sql += " AND colaborador = ?"
+        params.append(c_f.lower())
+    res = query(sql, params, fetch=True)
+    if not res: return pd.DataFrame()
+    df = pd.DataFrame(res, columns=['Colaborador', 'Data', 'Hora', 'Tipo'])
+    df_p = df.pivot_table(index=['Data', 'Colaborador'], columns='Tipo', values='Hora', aggfunc='first').reset_index()
+    for col in ['Entrada', 'Início Intervalo', 'Retorno Intervalo', 'Saída']:
+        if col not in df_p.columns: df_p[col] = "-"
+    return df_p[['Data', 'Colaborador', 'Entrada', 'Início Intervalo', 'Retorno Intervalo', 'Saída']].fillna("-")
+
+# --- 6. PAINEL MASTER ---
 if menu == "📊 Painel Master":
     st.markdown("## 📊 Inteligência de Jornada")
-    
-    # Filtros Globais
     f1, f2, f3 = st.columns(3)
     d_ini = f1.date_input("Início", date.today() - timedelta(days=7))
     d_fim = f2.date_input("Fim", date.today())
     colab_f = f3.selectbox("Colaborador", ["Todos", "gabriel", "italo", "ellen", "eduarda"])
 
-    sql = "SELECT colaborador, data, hora, tipo FROM pontos WHERE data BETWEEN ? AND ?"
-    params = [d_ini.isoformat(), d_fim.isoformat()]
-    if colab_f != "Todos": sql += " AND colaborador = ?"; params.append(colab_f.lower())
-    data_raw = query(sql, params, fetch=True)
-
-    # Cards Operacionais (Foco em Qtd e Horas)
+    df_h = get_pivot_data(colab_f, d_ini, d_fim)
+    
     c1, c2, c3, c4 = st.columns(4)
-    with c1: st.markdown(f'<div class="metric-container"><p class="m-label">Funcionários Ativos</p><p class="m-value">{len(set([x[0] for x in data_raw])) if data_raw else 0}</p></div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="metric-container"><p class="m-label">Total de Batidas</p><p class="m-value">{len(data_raw) if data_raw else 0}</p></div>', unsafe_allow_html=True)
-    with c3: st.markdown(f'<div class="metric-container"><p class="m-label">Horas Acumuladas</p><p class="m-value">--</p></div>', unsafe_allow_html=True)
-    
+    with c1: st.markdown(f'<div class="metric-container"><p class="m-label">Funcionários</p><p class="m-value">{len(df_h["Colaborador"].unique()) if not df_h.empty else 0}</p></div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="metric-container"><p class="m-label">Jornadas</p><p class="m-value">{len(df_h)}</p></div>', unsafe_allow_html=True)
+    with c3: st.markdown(f'<div class="metric-container"><p class="m-label">Horas Extras</p><p class="m-value">--</p></div>', unsafe_allow_html=True)
     pend_n = query("SELECT COUNT(*) FROM solicitacoes WHERE status='Pendente'", fetch=True)[0][0]
-    with c4: st.markdown(f'<div class="metric-container"><p class="m-label">Exceções Pendentes</p><p class="m-value" style="color:#FF8C00">{pend_n}</p></div>', unsafe_allow_html=True)
+    with c4: st.markdown(f'<div class="metric-container"><p class="m-label">Exceções</p><p class="m-value" style="color:#FF8C00">{pend_n}</p></div>', unsafe_allow_html=True)
 
-    st.markdown("### 🤖 Resumo Executivo")
-    st.markdown(f'<div class="gpt-summary">Operação estável no período de {d_ini} a {d_fim}. Foram detectadas {len(data_raw)} movimentações de jornada. Nenhuma divergência crítica encontrada.</div>', unsafe_allow_html=True)
+    if not df_h.empty:
+        st.dataframe(df_h, use_container_width=True, hide_index=True)
+        st.plotly_chart(px.bar(df_h.groupby('Data').count().reset_index(), x='Data', y='Colaborador', title="Volume de Batidas", color_discrete_sequence=['#FF8C00']), use_container_width=True)
 
-    if data_raw:
-        df = pd.DataFrame(data_raw, columns=['Colaborador', 'Data', 'Hora', 'Tipo'])
-        st.plotly_chart(px.bar(df.groupby('Data').count().reset_index(), x='Data', y='Colaborador', title="Volume Diário de Batidas", color_discrete_sequence=['#FF8C00']), use_container_width=True)
-        st.dataframe(df, use_container_width=True)
-
-# --- 6. AUDITORIA DE FOTOS (TABELA COM FILTROS) ---
+# --- 7. AUDITORIA, APROVAÇÕES E PONTO ---
 elif menu == "📸 Auditoria de Fotos":
-    st.header("📸 Auditoria Visual de Ponto")
-    
-    # Filtros
-    fa1, fa2, fa3 = st.columns(3)
+    st.header("📸 Auditoria Visual")
+    fa1, fa2 = st.columns(2)
     d_f = fa1.date_input("Data", date.today())
-    c_f = fa2.selectbox("Colaborador", ["Todos", "gabriel", "italo", "ellen", "eduarda"], key="auditoria_colab")
-    
+    c_f = fa2.selectbox("Colaborador", ["Todos", "gabriel", "italo", "ellen", "eduarda"], key="aud_c")
     sql_a = "SELECT colaborador, hora, tipo, foto FROM pontos WHERE data = ?"
     p_a = [d_f.isoformat()]
     if c_f != "Todos": sql_a += " AND colaborador = ?"; p_a.append(c_f.lower())
-    
-    dados_dia = query(sql_a, p_a, fetch=True)
-    
-    if dados_dia:
-        # Tabela Personalizada com Fotos
-        for colab, hora, tipo, foto_b64 in dados_dia:
-            with st.expander(f"📌 {colab.upper()} | {tipo} | {hora}"):
-                c_img, c_info = st.columns([1, 3])
-                with c_img:
-                    if foto_b64 and foto_b64 != "S/FOTO":
-                        st.image(base64.b64decode(foto_b64), width=200)
+    dados = query(sql_a, p_a, fetch=True)
+    if dados:
+        for col, hor, tip, pic in dados:
+            with st.expander(f"📌 {col.upper()} | {tip} | {hor}"):
+                c_i, c_t = st.columns([1, 3])
+                with c_i:
+                    if pic and pic != "S/FOTO": st.image(base64.b64decode(pic), width=180)
                     else: st.warning("Sem Foto")
-                with c_info:
-                    st.write(f"**Evento:** {tipo}")
-                    st.write(f"**Horário:** {hora}")
-                    st.write(f"**Data:** {d_f}")
-    else: st.info("Nenhum registro encontrado para estes filtros.")
+                with c_t: st.write(f"Registro: {tip} às {hor}")
 
-# --- 7. APROVAÇÕES (FILTRO NOME/DATA) ---
 elif menu == "⚖️ Aprovações":
     st.header("⚖️ Central de Exceções")
     f_ap1, f_ap2 = st.columns(2)
-    d_ap = f_ap1.date_input("Data da Exceção", date.today())
-    c_ap = f_ap2.selectbox("Colaborador", ["Todos", "gabriel", "italo", "ellen", "eduarda"], key="aprov_colab")
-    
+    d_ap = f_ap1.date_input("Data", date.today())
+    c_ap = f_ap2.selectbox("Nome", ["Todos", "gabriel", "italo", "ellen", "eduarda"])
     sql_s = "SELECT id, colaborador, tipo_solicitacao, justificativa FROM solicitacoes WHERE data = ? AND status = 'Pendente'"
     p_s = [d_ap.isoformat()]
     if c_ap != "Todos": sql_s += " AND colaborador = ?"; p_s.append(c_ap.lower())
-    
     sols = query(sql_s, p_s, fetch=True)
     if sols:
-        df_s = pd.DataFrame(sols, columns=['ID', 'Colaborador', 'Tipo', 'Justificativa'])
-        st.table(df_s)
-        id_sel = st.number_input("ID para Aprovação/Rejeição", step=1)
+        st.table(pd.DataFrame(sols, columns=['ID', 'Colaborador', 'Tipo', 'Motivo']))
+        idx = st.number_input("ID para Decisão", step=1)
         ca, cr = st.columns(2)
-        if ca.button("✅ APROVAR"):
-            query("UPDATE solicitacoes SET status='Aprovado' WHERE id=?", (id_sel,))
-            st.rerun()
-        if cr.button("❌ REJEITAR"):
-            query("UPDATE solicitacoes SET status='Rejeitado' WHERE id=?", (id_sel,))
-            st.rerun()
-    else: st.info("Nada pendente para os filtros selecionados.")
-
-# --- 8. GERADOR E RESTO DO CÓDIGO ---
-elif menu == "⚙️ Gerador":
-    st.header("⚙️ Injeção de Dados")
-    if st.button("🚀 GERAR 250 REGISTROS"):
-        for _ in range(63):
-            n = random.choice(['gabriel', 'italo', 'ellen', 'eduarda'])
-            d = (date.today() - timedelta(days=random.randint(0, 30))).isoformat()
-            for t in ["Entrada", "Início Intervalo", "Retorno Intervalo", "Saída"]:
-                query("INSERT INTO pontos (colaborador, data, hora, tipo, foto) VALUES (?,?,?,?,?)", (n, d, "08:00:00", t, "S/FOTO"))
-        st.success("Dados gerados.")
+        if ca.button("✅ APROVAR"): query("UPDATE solicitacoes SET status='Aprovado' WHERE id=?", (idx,)); st.rerun()
+        if cr.button("❌ REJEITAR"): query("UPDATE solicitacoes SET status='Rejeitado' WHERE id=?", (idx,)); st.rerun()
 
 elif menu == "🕒 Ponto Digital":
-    st.header("🕒 Ponto Digital")
+    st.header("🕒 Registrar Ponto")
     tipo = st.selectbox("Evento", ["Entrada", "Início Intervalo", "Retorno Intervalo", "Saída"])
     foto = st.camera_input("Validação Facial")
     if st.button("CONFIRMAR"):
@@ -200,9 +166,19 @@ elif menu == "📂 Histórico":
 elif menu == "⛺ Exceções":
     st.header("⛺ Solicitar Exceção")
     with st.form("ex"):
-        t = st.selectbox("Motivo", ["Pernoite", "Atraso", "Outros"])
+        t = st.selectbox("Motivo", ["Pernoite", "Atraso", "Erro no Ponto"])
         j = st.text_area("Justificativa")
         if st.form_submit_button("ENVIAR"):
             query("INSERT INTO solicitacoes (colaborador, data, tipo_solicitacao, justificativa) VALUES (?,?,?,?)",
                   (st.session_state.user, date.today().isoformat(), t, j))
             st.success("Enviado.")
+
+elif menu == "⚙️ Gerador":
+    st.header("⚙️ Gerador")
+    if st.button("🚀 INJETAR DADOS"):
+        for _ in range(30):
+            n = random.choice(['gabriel', 'italo', 'ellen', 'eduarda'])
+            d = (date.today() - timedelta(days=random.randint(0, 10))).isoformat()
+            for t in ["Entrada", "Início Intervalo", "Retorno Intervalo", "Saída"]:
+                query("INSERT INTO pontos (colaborador, data, hora, tipo, foto) VALUES (?,?,?,?,?)", (n, d, "08:00", t, "S/FOTO"))
+        st.success("Ok.")
