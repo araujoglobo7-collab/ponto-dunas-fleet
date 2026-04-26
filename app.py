@@ -29,10 +29,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. ENGINE DE DADOS ---
-DB = 'dunas_fleet_final_v90.db'
+# --- 2. ENGINE DE DADOS (CORRIGIDA) ---
+DB = 'dunas_fleet_master_v100.db'
 
-def query(sql, p=(), fetch=False):
+def query(sql, p=(), fetch=False): # O erro 'fetch' sumirá aqui
     with sqlite3.connect(DB) as conn:
         c = conn.cursor()
         c.execute(sql, p)
@@ -51,7 +51,22 @@ def init_db():
 
 init_db()
 
-# --- 3. CONTROLE DE ACESSO ---
+# --- 3. LÓGICA DE TABELA HORIZONTAL ---
+def get_pivot_data(c_f, d1, d2):
+    sql = "SELECT colaborador, data, hora, tipo FROM pontos WHERE data BETWEEN ? AND ?"
+    params = [d1.isoformat(), d2.isoformat()]
+    if c_f != "Todos":
+        sql += " AND colaborador = ?"
+        params.append(c_f.lower())
+    res = query(sql, params, fetch=True)
+    if not res: return pd.DataFrame()
+    df = pd.DataFrame(res, columns=['Colaborador', 'Data', 'Hora', 'Tipo'])
+    df_p = df.pivot_table(index=['Data', 'Colaborador'], columns='Tipo', values='Hora', aggfunc='first').reset_index()
+    for col in ['Entrada', 'Início Intervalo', 'Retorno Intervalo', 'Saída']:
+        if col not in df_p.columns: df_p[col] = "-"
+    return df_p[['Data', 'Colaborador', 'Entrada', 'Início Intervalo', 'Retorno Intervalo', 'Saída']].fillna("-")
+
+# --- 4. CONTROLE DE ACESSO ---
 if 'user' not in st.session_state: st.session_state.user = None
 
 if st.session_state.user is None:
@@ -67,7 +82,7 @@ if st.session_state.user is None:
                 st.rerun()
     st.stop()
 
-# --- 4. SIDEBAR ---
+# --- 5. SIDEBAR ---
 with st.sidebar:
     st.markdown(f"### 👤 {st.session_state.user.upper()}")
     menu = st.radio("NAVEGAÇÃO", ["🕒 Ponto Digital", "📂 Histórico", "⛺ Exceções"] + 
@@ -76,22 +91,7 @@ with st.sidebar:
         st.session_state.user = None
         st.rerun()
 
-# --- 5. LÓGICA DE TABELA HORIZONTAL ---
-def get_pivot_data(c_f, d1, d2):
-    sql = "SELECT colaborador, data, hora, tipo FROM pontos WHERE data BETWEEN ? AND ?"
-    params = [d1.isoformat(), d2.isoformat()]
-    if c_f != "Todos":
-        sql += " AND colaborador = ?"
-        params.append(c_f.lower())
-    res = query(sql, params, fetch=True)
-    if not res: return pd.DataFrame()
-    df = pd.DataFrame(res, columns=['Colaborador', 'Data', 'Hora', 'Tipo'])
-    df_p = df.pivot_table(index=['Data', 'Colaborador'], columns='Tipo', values='Hora', aggfunc='first').reset_index()
-    for col in ['Entrada', 'Início Intervalo', 'Retorno Intervalo', 'Saída']:
-        if col not in df_p.columns: df_p[col] = "-"
-    return df_p[['Data', 'Colaborador', 'Entrada', 'Início Intervalo', 'Retorno Intervalo', 'Saída']].fillna("-")
-
-# --- 6. PAINEL MASTER ---
+# --- 6. TELAS ---
 if menu == "📊 Painel Master":
     st.markdown("## 📊 Inteligência de Jornada")
     f1, f2, f3 = st.columns(3)
@@ -102,9 +102,9 @@ if menu == "📊 Painel Master":
     df_h = get_pivot_data(colab_f, d_ini, d_fim)
     
     c1, c2, c3, c4 = st.columns(4)
-    with c1: st.markdown(f'<div class="metric-container"><p class="m-label">Funcionários</p><p class="m-value">{len(df_h["Colaborador"].unique()) if not df_h.empty else 0}</p></div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="metric-container"><p class="m-label">Jornadas</p><p class="m-value">{len(df_h)}</p></div>', unsafe_allow_html=True)
-    with c3: st.markdown(f'<div class="metric-container"><p class="m-label">Horas Extras</p><p class="m-value">--</p></div>', unsafe_allow_html=True)
+    with c1: st.markdown(f'<div class="metric-container"><p class="m-label">Operadores</p><p class="m-value">{len(df_h["Colaborador"].unique()) if not df_h.empty else 0}</p></div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="metric-container"><p class="m-label">Jornadas Totais</p><p class="m-value">{len(df_h)}</p></div>', unsafe_allow_html=True)
+    with c3: st.markdown(f'<div class="metric-container"><p class="m-label">Alertas</p><p class="m-value">--</p></div>', unsafe_allow_html=True)
     pend_n = query("SELECT COUNT(*) FROM solicitacoes WHERE status='Pendente'", fetch=True)[0][0]
     with c4: st.markdown(f'<div class="metric-container"><p class="m-label">Exceções</p><p class="m-value" style="color:#FF8C00">{pend_n}</p></div>', unsafe_allow_html=True)
 
@@ -112,7 +112,6 @@ if menu == "📊 Painel Master":
         st.dataframe(df_h, use_container_width=True, hide_index=True)
         st.plotly_chart(px.bar(df_h.groupby('Data').count().reset_index(), x='Data', y='Colaborador', title="Volume de Batidas", color_discrete_sequence=['#FF8C00']), use_container_width=True)
 
-# --- 7. AUDITORIA, APROVAÇÕES E PONTO ---
 elif menu == "📸 Auditoria de Fotos":
     st.header("📸 Auditoria Visual")
     fa1, fa2 = st.columns(2)
@@ -125,23 +124,16 @@ elif menu == "📸 Auditoria de Fotos":
     if dados:
         for col, hor, tip, pic in dados:
             with st.expander(f"📌 {col.upper()} | {tip} | {hor}"):
-                c_i, c_t = st.columns([1, 3])
-                with c_i:
-                    if pic and pic != "S/FOTO": st.image(base64.b64decode(pic), width=180)
-                    else: st.warning("Sem Foto")
-                with c_t: st.write(f"Registro: {tip} às {hor}")
+                ci, ct = st.columns([1, 3])
+                if pic and pic != "S/FOTO": ci.image(base64.b64decode(pic), width=180)
+                ct.write(f"Registro: {tip} às {hor}")
 
 elif menu == "⚖️ Aprovações":
     st.header("⚖️ Central de Exceções")
-    f_ap1, f_ap2 = st.columns(2)
-    d_ap = f_ap1.date_input("Data", date.today())
-    c_ap = f_ap2.selectbox("Nome", ["Todos", "gabriel", "italo", "ellen", "eduarda"])
-    sql_s = "SELECT id, colaborador, tipo_solicitacao, justificativa FROM solicitacoes WHERE data = ? AND status = 'Pendente'"
-    p_s = [d_ap.isoformat()]
-    if c_ap != "Todos": sql_s += " AND colaborador = ?"; p_s.append(c_ap.lower())
-    sols = query(sql_s, p_s, fetch=True)
+    sols = query("SELECT id, colaborador, data, tipo_solicitacao, justificativa FROM solicitacoes WHERE status = 'Pendente'", fetch=True)
     if sols:
-        st.table(pd.DataFrame(sols, columns=['ID', 'Colaborador', 'Tipo', 'Motivo']))
+        df_s = pd.DataFrame(sols, columns=['ID', 'Colaborador', 'Data', 'Tipo', 'Motivo'])
+        st.table(df_s)
         idx = st.number_input("ID para Decisão", step=1)
         ca, cr = st.columns(2)
         if ca.button("✅ APROVAR"): query("UPDATE solicitacoes SET status='Aprovado' WHERE id=?", (idx,)); st.rerun()
@@ -158,27 +150,33 @@ elif menu == "🕒 Ponto Digital":
                   (st.session_state.user, date.today().isoformat(), datetime.now().strftime("%H:%M:%S"), tipo, b64))
             st.success("Registrado!")
 
+elif menu == "⚙️ Gerador":
+    st.header("⚙️ Injetar Dados Comerciais")
+    if st.button("🚀 INJETAR 40 JORNADAS"):
+        for _ in range(40):
+            n = random.choice(['gabriel', 'italo', 'ellen', 'eduarda'])
+            d = (date.today() - timedelta(days=random.randint(0, 15))).isoformat()
+            # Horários aleatórios realistas
+            h1 = f"{random.randint(7, 8):02}:{random.randint(0, 59):02}:00"
+            h2 = f"{random.randint(12, 12):02}:{random.randint(0, 15):02}:00"
+            h3 = f"{random.randint(13, 13):02}:{random.randint(0, 15):02}:00"
+            h4 = f"{random.randint(17, 18):02}:{random.randint(0, 59):02}:00"
+            times = [("Entrada", h1), ("Início Intervalo", h2), ("Retorno Intervalo", h3), ("Saída", h4)]
+            for t, h in times:
+                query("INSERT INTO pontos (colaborador, data, hora, tipo, foto) VALUES (?,?,?,?,?)", (n, d, h, t, "S/FOTO"))
+        st.success("Dados injetados com horários variáveis.")
+
 elif menu == "📂 Histórico":
-    st.header("📂 Histórico")
+    st.header("📂 Meu Histórico")
     h = query("SELECT data, hora, tipo FROM pontos WHERE colaborador=?", (st.session_state.user,), fetch=True)
     if h: st.dataframe(pd.DataFrame(h, columns=['Data', 'Hora', 'Tipo']), use_container_width=True)
 
 elif menu == "⛺ Exceções":
     st.header("⛺ Solicitar Exceção")
     with st.form("ex"):
-        t = st.selectbox("Motivo", ["Pernoite", "Atraso", "Erro no Ponto"])
+        t = st.selectbox("Motivo", ["Pernoite", "Atraso", "Esquecimento"])
         j = st.text_area("Justificativa")
         if st.form_submit_button("ENVIAR"):
             query("INSERT INTO solicitacoes (colaborador, data, tipo_solicitacao, justificativa) VALUES (?,?,?,?)",
                   (st.session_state.user, date.today().isoformat(), t, j))
             st.success("Enviado.")
-
-elif menu == "⚙️ Gerador":
-    st.header("⚙️ Gerador")
-    if st.button("🚀 INJETAR DADOS"):
-        for _ in range(30):
-            n = random.choice(['gabriel', 'italo', 'ellen', 'eduarda'])
-            d = (date.today() - timedelta(days=random.randint(0, 10))).isoformat()
-            for t in ["Entrada", "Início Intervalo", "Retorno Intervalo", "Saída"]:
-                query("INSERT INTO pontos (colaborador, data, hora, tipo, foto) VALUES (?,?,?,?,?)", (n, d, "08:00", t, "S/FOTO"))
-        st.success("Ok.")
